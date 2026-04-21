@@ -29,6 +29,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+next.stdout.log
+next.stderr.log
+next-3002.stdout.log
+next-3002.stderr.log
 
 # env files (can opt-in for committing if needed)
 .env*
