@@ -29,6 +29,29 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+const normalizeEmailText = (value: string, fallback: string) => {
+  const trimmedValue = value.trim();
+
+  return trimmedValue || fallback;
+};
+
+const getEstimateEmailDefaults = ({
+  customerName,
+  estimateDate,
+  note,
+  siteName,
+  title,
+}: Pick<
+  SendEstimateEmailPayload,
+  "customerName" | "estimateDate" | "note" | "siteName" | "title"
+>) => ({
+  customerName: normalizeEmailText(customerName, "고객"),
+  estimateDate: normalizeEmailText(estimateDate, "-"),
+  note: normalizeEmailText(note, "별도 비고 없음"),
+  siteName: normalizeEmailText(siteName, "현장"),
+  title: normalizeEmailText(title, "견적서"),
+});
+
 export const isValidEmail = (value: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
@@ -57,8 +80,19 @@ export const createEstimateEmailSubject = ({
   customerName,
   siteName,
   totals,
-}: Pick<SendEstimateEmailPayload, "customerName" | "siteName" | "totals">) =>
-  `[견적서] ${siteName} / ${customerName} / ${won(totals.total)}`;
+}: Pick<SendEstimateEmailPayload, "customerName" | "siteName" | "totals">) => {
+  const defaults = getEstimateEmailDefaults({
+    customerName,
+    estimateDate: "",
+    note: "",
+    siteName,
+    title: "",
+  });
+
+  return `[견적서] ${defaults.siteName} / ${defaults.customerName} / ${won(
+    totals.total
+  )}`;
+};
 
 export const createEstimateEmailText = ({
   customerName,
@@ -68,24 +102,33 @@ export const createEstimateEmailText = ({
   siteName,
   title,
   totals,
-}: Omit<SendEstimateEmailPayload, "to" | "siteId">) =>
-  [
-    `${customerName} 고객님, 안녕하세요.`,
+}: Omit<SendEstimateEmailPayload, "to" | "siteId">) => {
+  const defaults = getEstimateEmailDefaults({
+    customerName,
+    estimateDate,
+    note,
+    siteName,
+    title,
+  });
+
+  return [
+    `${defaults.customerName} 고객님, 안녕하세요.`,
     "",
-    `${siteName} 현장 견적서를 전달드립니다.`,
-    `견적서 제목: ${title}`,
-    `견적일: ${estimateDate || "-"}`,
+    `${defaults.siteName} 현장 견적서를 전달드립니다.`,
+    `견적서 제목: ${defaults.title}`,
+    `견적일: ${defaults.estimateDate}`,
     `공급가액: ${won(totals.supply)}`,
     `부가세: ${won(totals.vatAmount)}`,
     `합계: ${won(totals.total)}`,
     "",
-    `비고: ${note || "없음"}`,
+    `비고: ${defaults.note}`,
     previewUrl ? `미리보기 링크: ${previewUrl}` : "",
     "",
     "감사합니다.",
   ]
     .filter(Boolean)
     .join("\n");
+};
 
 export const createEstimateEmailHtml = ({
   customerName,
@@ -96,11 +139,18 @@ export const createEstimateEmailHtml = ({
   title,
   totals,
 }: Omit<SendEstimateEmailPayload, "to" | "siteId">) => {
-  const safeCustomerName = escapeHtml(customerName || "고객");
-  const safeSiteName = escapeHtml(siteName || "-");
-  const safeTitle = escapeHtml(title || "견적서");
-  const safeEstimateDate = escapeHtml(estimateDate || "-");
-  const safeNote = escapeHtml(note || "별도 비고가 없습니다.");
+  const defaults = getEstimateEmailDefaults({
+    customerName,
+    estimateDate,
+    note,
+    siteName,
+    title,
+  });
+  const safeCustomerName = escapeHtml(defaults.customerName);
+  const safeSiteName = escapeHtml(defaults.siteName);
+  const safeTitle = escapeHtml(defaults.title);
+  const safeEstimateDate = escapeHtml(defaults.estimateDate);
+  const safeNote = escapeHtml(defaults.note);
   const safePreviewUrl = previewUrl ? escapeHtml(previewUrl) : "";
 
   return `
@@ -158,7 +208,7 @@ export const createEstimateEmailHtml = ({
           }
 
           <p style="margin:24px 0 0;font-size:13px;line-height:1.7;color:#64748b;">
-            본 메일은 견적 확인용으로 발송되었습니다. 추후 PDF 첨부 또는 고객 전용 열람 링크로 확장할 수 있도록 구성되어 있습니다.
+            본 메일은 견적 확인용으로 발송되었습니다. 첨부된 PDF와 미리보기 링크를 함께 확인해 주세요.
           </p>
         </div>
       </div>

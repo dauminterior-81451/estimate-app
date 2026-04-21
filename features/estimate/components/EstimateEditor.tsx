@@ -1,8 +1,17 @@
 ﻿"use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import EstimateDocument from "@/components/EstimateDocument";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from "react";
+import EstimateDocument, {
+  buildEstimateVersionDiff,
+} from "@/components/EstimateDocument";
 import SiteWorkspaceShell from "@/components/SiteWorkspaceShell";
 import { useEstimateState } from "@/features/estimate/hooks/useEstimateState";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -13,6 +22,7 @@ import {
   calcTotal,
 } from "@/features/estimate/logic/calculateEstimate";
 import {
+  createEstimateEmailSubject,
   createEstimatePreviewUrl,
   isValidEmail,
   type SendEstimateEmailPayload,
@@ -32,6 +42,16 @@ type Html2CanvasFunction = typeof import("html2canvas").default;
 type JsPdfConstructor = typeof import("jspdf").jsPDF;
 
 const PDF_CAPTURE_COLOR_STYLE = {
+  "--color-amber-50": "#fffbeb",
+  "--color-amber-100": "#fef3c7",
+  "--color-amber-200": "#fde68a",
+  "--color-amber-700": "#b45309",
+  "--color-green-50": "#f0fdf4",
+  "--color-green-100": "#dcfce7",
+  "--color-green-200": "#bbf7d0",
+  "--color-green-700": "#15803d",
+  "--color-red-100": "#fee2e2",
+  "--color-red-700": "#b91c1c",
   "--color-slate-50": "#f8fafc",
   "--color-slate-100": "#f1f5f9",
   "--color-slate-200": "#e2e8f0",
@@ -92,44 +112,7 @@ const parsePriceInput = (value: string) => {
   return Number.isNaN(parsed) ? null : parsed;
 };
 
-const flattenEstimateItems = (estimate: Estimate) =>
-  estimate.categories.flatMap((category) =>
-    category.items
-      .map((item) => ({
-        name: item.name.trim(),
-        amount: calcItem(item.qty, item.price),
-      }))
-      .filter((item) => item.name.length > 0)
-  );
-
-const compareEstimateVersions = (
-  currentEstimate: Estimate,
-  previousEstimate: Estimate
-) => {
-  const currentItems = flattenEstimateItems(currentEstimate);
-  const previousItems = flattenEstimateItems(previousEstimate);
-  const currentMap = new Map(currentItems.map((item) => [item.name, item.amount]));
-  const previousMap = new Map(
-    previousItems.map((item) => [item.name, item.amount])
-  );
-
-  const addedCount = currentItems.filter(
-    (item) => !previousMap.has(item.name)
-  ).length;
-  const removedCount = previousItems.filter(
-    (item) => !currentMap.has(item.name)
-  ).length;
-  const changedCount = currentItems.filter(
-    (item) =>
-      previousMap.has(item.name) && previousMap.get(item.name) !== item.amount
-  ).length;
-
-  return {
-    addedCount,
-    removedCount,
-    changedCount,
-  };
-};
+const ESTIMATE_TEXT_FIELD_SELECTOR = "[data-estimate-text-field='true']";
 
 export default function EstimateEditor({ siteId }: EstimateEditorProps) {
   const router = useRouter();
@@ -158,6 +141,9 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
   } = useEstimateState(estimateRepository.createDefault(siteId));
   const [estimates, setEstimates] = useState<Estimate[]>([]);
   const [editingPrices, setEditingPrices] = useState<Record<string, string>>({});
+  const [composingItemNames, setComposingItemNames] = useState<
+    Record<string, string>
+  >({});
   const [mailRecipient, setMailRecipient] = useState("");
   const [mailState, setMailState] = useState<MailState>("idle");
   const [mailMessage, setMailMessage] = useState("");
@@ -175,6 +161,7 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
 
     setEstimates(nextEstimates);
     setEditingPrices({});
+    setComposingItemNames({});
     setDraft(estimate ?? estimateRepository.createDefault(siteId));
     setLoaded(true);
   }, [siteId, selectedEstimateId, setDraft]);
@@ -202,6 +189,11 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
     [currentEstimateId, estimates]
   );
 
+  useEffect(() => {
+    setMailState("idle");
+    setMailMessage("");
+  }, [currentEstimateId]);
+
   const previousEstimate = useMemo(() => {
     if (!currentEstimate) {
       return null;
@@ -218,13 +210,10 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
     return estimates[currentIndex + 1] ?? null;
   }, [currentEstimate, estimates]);
 
-  const estimateChangeSummary = useMemo(() => {
-    if (!currentEstimate || !previousEstimate) {
-      return null;
-    }
-
-    return compareEstimateVersions(currentEstimate, previousEstimate);
-  }, [currentEstimate, previousEstimate]);
+  const estimateVersionDiff = useMemo(
+    () => buildEstimateVersionDiff(draft, previousEstimate),
+    [draft, previousEstimate]
+  );
 
   const getEstimateEditorHref = (estimateId: string | null) =>
     estimateId
@@ -518,6 +507,51 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
     removeItem(categoryId, itemId);
   };
 
+  const focusAdjacentEstimateTextField = (
+    currentElement: HTMLInputElement | HTMLTextAreaElement,
+    direction: 1 | -1
+  ) => {
+    const textFields = Array.from(
+      document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        ESTIMATE_TEXT_FIELD_SELECTOR
+      )
+    ).filter((field) => !field.disabled);
+    const currentIndex = textFields.indexOf(currentElement);
+
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const nextField = textFields[currentIndex + direction];
+
+    if (!nextField) {
+      return;
+    }
+
+    nextField.focus();
+    if (nextField instanceof HTMLInputElement) {
+      nextField.select();
+    }
+  };
+
+  const handleEstimateTextFieldKeyDown = (
+    event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => {
+    if (event.key !== "Enter" && event.key !== "Tab") {
+      return;
+    }
+
+    if (event.nativeEvent.isComposing) {
+      event.preventDefault();
+      return;
+    }
+
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      focusAdjacentEstimateTextField(event.currentTarget, 1);
+    }
+  };
+
   const sendEmail = async () => {
     if (!site || !customer) {
       return;
@@ -567,16 +601,16 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
       );
       const payload: SendEstimateEmailPayload = {
         to: recipient,
-        customerName: customer.name,
-        estimateDate: draft.estimateDate,
+        customerName: customer.name.trim() || "고객",
+        estimateDate: draft.estimateDate.trim(),
         estimateId: currentEstimateId ?? undefined,
-        note: draft.note,
+        note: draft.note.trim(),
         pdfBase64,
         pdfFileName: fileName,
         previewUrl,
         siteId,
-        siteName: site.siteName,
-        title: draft.title,
+        siteName: site.siteName.trim() || "현장",
+        title: emailDraftTitle,
         totals,
       };
 
@@ -635,6 +669,14 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
   const customerName = customer.name || "미지정 고객";
   const customerPhone = customer.phone || "연락처 없음";
   const customerEmail = customer.email || "이메일 없음";
+  const normalizedMailRecipient = mailRecipient.trim();
+  const emailDraftTitle =
+    draft.title.trim() || currentEstimate?.name || "견적서";
+  const estimateEmailSubject = createEstimateEmailSubject({
+    customerName: customer.name.trim() || "고객",
+    siteName: site.siteName.trim() || "현장",
+    totals,
+  });
   const namedItemCount = draft.categories.reduce(
     (count, category) =>
       count +
@@ -879,14 +921,15 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
               </div>
             </div>
             <div className="mt-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              {estimateChangeSummary && previousEstimate ? (
+              {estimateVersionDiff && previousEstimate ? (
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   <span className="font-medium text-slate-900">
                     {previousEstimate.name} 대비
                   </span>
-                  <span>추가된 항목 {estimateChangeSummary.addedCount}개</span>
-                  <span>삭제된 항목 {estimateChangeSummary.removedCount}개</span>
-                  <span>금액 변경 항목 {estimateChangeSummary.changedCount}개</span>
+                  <span>수정 품목 {estimateVersionDiff.changedCategoryCount}개</span>
+                  <span>수정 항목 {estimateVersionDiff.updatedItemCount}개</span>
+                  <span>추가 항목 {estimateVersionDiff.addedItemCount}개</span>
+                  <span>삭제 항목 {estimateVersionDiff.removedItemCount}개</span>
                 </div>
               ) : (
                 <span>비교할 이전 버전이 없습니다.</span>
@@ -973,7 +1016,10 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
                 {currentEstimate?.name ?? "기본 견적"} / {currentEstimateVersionLabel}
               </div>
               <div className="mt-1 text-xs text-slate-500">
-                첨부 파일명 {(draft.title || "견적서").trim() || "견적서"}.pdf
+                첨부 파일명 {emailDraftTitle}.pdf
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                기본 제목 {estimateEmailSubject}
               </div>
             </div>
             <label className="mt-4 block text-sm text-slate-700">
@@ -981,6 +1027,7 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
               <input
                 type="email"
                 value={mailRecipient}
+                autoComplete="email"
                 onChange={(event) => {
                   setMailRecipient(event.target.value);
                   if (mailState !== "idle") {
@@ -1012,8 +1059,8 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
               className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${mailStatusToneClass}`}
             >
               {mailMessage ||
-                (mailRecipient
-                  ? `발송 대상 이메일 ${mailRecipient}`
+                (normalizedMailRecipient
+                  ? `발송 대상 이메일 ${normalizedMailRecipient}`
                   : "수신 이메일을 입력하면 현재 견적 PDF를 발송할 수 있습니다.")}
             </div>
           </section>
@@ -1023,6 +1070,8 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
           <label className="text-sm text-slate-700">
             <span className="mb-2 block font-medium">견적서 제목</span>
             <input
+              lang="ko"
+              inputMode="text"
               className="w-full rounded-xl border border-slate-200 p-3 text-lg font-semibold"
               value={draft.title}
               onChange={(event) =>
@@ -1054,6 +1103,7 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
         <label className="mt-4 block text-sm text-slate-700">
           <span className="mb-2 block font-medium">비고</span>
           <textarea
+            lang="ko"
             className="min-h-28 w-full rounded-xl border border-slate-200 p-3"
             value={draft.note}
             onChange={(event) =>
@@ -1120,192 +1170,334 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
             </div>
           ) : null}
 
-          {draft.categories.map((category) => (
-            <section
-              key={category.id}
-              className="rounded-2xl border border-slate-200 bg-slate-50 p-5"
-            >
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-                <input
-                  className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white p-3 font-semibold"
-                  value={category.name}
-                  onChange={(event) =>
-                    updateCategory(category.id, (currentCategory) => ({
-                      ...currentCategory,
-                      name: event.target.value,
-                    }))
-                  }
-                />
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => addItem(category.id)}
-                    className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700"
-                  >
-                    + 항목 추가
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => duplicateCategory(category.id)}
-                    className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-                  >
-                    품목 복사
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleRemoveCategory(category.id, category.name)
-                    }
-                    className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50"
-                  >
-                    품목 삭제
-                  </button>
-                </div>
-              </div>
+          {draft.categories.map((category) => {
+            const categoryDiff =
+              estimateVersionDiff?.categoryChanges[category.id] ?? null;
+            const categoryToneClass =
+              categoryDiff?.kind === "added"
+                ? "border-green-200 bg-green-50"
+                : categoryDiff
+                  ? "border-amber-200 bg-amber-50"
+                  : "border-slate-200 bg-slate-50";
+            const categoryAccentClass =
+              categoryDiff?.kind === "added"
+                ? "border-l-4 border-l-green-500"
+                : categoryDiff
+                  ? "border-l-4 border-l-amber-500"
+                  : "border-l-4 border-l-slate-300";
 
-              <div className="space-y-2">
-                {category.items.length === 0 ? (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-sm text-slate-500">
-                    <div>
-                      <div className="font-medium text-slate-700">
-                        등록된 항목이 없습니다.
-                      </div>
-                      <p className="mt-1 text-slate-500">
-                        첫 항목을 추가하면 수량과 단가를 바로 입력할 수 있습니다.
-                      </p>
+            return (
+              <section
+                key={category.id}
+                className={`rounded-2xl border px-5 py-5 md:px-6 ${categoryToneClass} ${categoryAccentClass}`}
+              >
+                <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+                        품목
+                      </span>
+                      {categoryDiff?.kind === "added" ? (
+                        <span className="rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">
+                          신규 품목
+                        </span>
+                      ) : null}
+                      {categoryDiff?.changedFields.includes("name") ? (
+                        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                          품목명 수정
+                        </span>
+                      ) : null}
+                      {categoryDiff?.updatedItemCount ? (
+                        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                          항목 수정 {categoryDiff.updatedItemCount}
+                        </span>
+                      ) : null}
+                      {categoryDiff?.addedItemCount ? (
+                        <span className="rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">
+                          항목 추가 {categoryDiff.addedItemCount}
+                        </span>
+                      ) : null}
+                      {categoryDiff?.removedItemCount ? (
+                        <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700">
+                          항목 삭제 {categoryDiff.removedItemCount}
+                        </span>
+                      ) : null}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => addItem(category.id)}
-                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-                    >
-                      첫 항목 추가
-                    </button>
-                  </div>
-                ) : null}
-
-                {category.items.length > 0 ? (
-                  <div className="hidden px-1 pb-1 md:grid md:grid-cols-[2fr_100px_160px_160px_220px] md:gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    <span>항목명</span>
-                    <span>수량</span>
-                    <span>단가</span>
-                    <span className="text-right">금액</span>
-                    <span className="text-center">동작</span>
-                  </div>
-                ) : null}
-
-                {category.items.map((item) => (
-                  <div
-                    key={item.id}
-                    className="grid gap-2 md:grid-cols-[2fr_100px_160px_160px_220px]"
-                  >
                     <input
-                      className="rounded-xl border border-slate-200 bg-white p-3"
-                      placeholder="항목명"
-                      value={item.name}
+                      data-estimate-text-field="true"
+                      lang="ko"
+                      inputMode="text"
+                      className="min-w-0 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-2xl font-extrabold tracking-tight text-slate-950 shadow-sm"
+                      value={category.name}
+                      onKeyDown={handleEstimateTextFieldKeyDown}
                       onChange={(event) =>
-                        updateItem(category.id, item.id, (currentItem) => ({
-                          ...currentItem,
+                        updateCategory(category.id, (currentCategory) => ({
+                          ...currentCategory,
                           name: event.target.value,
                         }))
                       }
                     />
-                    <input
-                      type="number"
-                      min="0"
-                      className="rounded-xl border border-slate-200 bg-white p-3"
-                      value={item.qty}
-                      onChange={(event) =>
-                        updateItem(category.id, item.id, (currentItem) => ({
-                          ...currentItem,
-                          qty: Number(event.target.value),
-                        }))
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addItem(category.id)}
+                      className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700"
+                    >
+                      + 항목 추가
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => duplicateCategory(category.id)}
+                      className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                    >
+                      품목 복사
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleRemoveCategory(category.id, category.name)
                       }
-                    />
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      className="rounded-xl border border-slate-200 bg-white p-3"
-                      value={
-                        editingPrices[item.id] ??
-                        formatPriceInput(String(item.price))
-                      }
-                      onFocus={(event) => {
-                        if (
-                          (
+                      className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50"
+                    >
+                      품목 삭제
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3.5">
+                  {category.items.length === 0 ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-sm text-slate-500">
+                      <div>
+                        <div className="font-medium text-slate-700">
+                          등록된 항목이 없습니다.
+                        </div>
+                        <p className="mt-1 text-slate-500">
+                          첫 항목을 추가하면 수량과 단가를 바로 입력할 수 있습니다.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => addItem(category.id)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                      >
+                        첫 항목 추가
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {category.items.length > 0 ? (
+                    <div className="hidden px-1 pb-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 md:grid md:grid-cols-[minmax(0,4fr)_80px_160px_170px_200px] md:gap-2">
+                      <span>항목내용</span>
+                      <span>수량</span>
+                      <span>단가</span>
+                      <span className="text-right">금액(자동)</span>
+                      <span className="text-center">동작</span>
+                    </div>
+                  ) : null}
+
+                  {category.items.map((item) => {
+                    const itemDiff = categoryDiff?.itemChanges[item.id] ?? null;
+                    const itemToneClass =
+                      itemDiff?.kind === "added"
+                        ? "border-green-200 bg-green-50"
+                        : itemDiff
+                          ? "border-amber-200 bg-amber-50"
+                          : "border-slate-200 bg-white";
+                    const itemAccentClass =
+                      itemDiff?.kind === "added"
+                        ? "border-l-4 border-l-green-500"
+                        : itemDiff
+                          ? "border-l-4 border-l-amber-500"
+                          : "border-l-4 border-l-transparent";
+                    const changedFieldLabels = itemDiff
+                      ? itemDiff.changedFields
+                          .map((field) =>
+                            field === "name"
+                              ? "항목명"
+                              : field === "qty"
+                                ? "수량"
+                                : "단가"
+                          )
+                          .join(", ")
+                      : "";
+
+                    return (
+                      <div
+                        key={item.id}
+                        className={`grid gap-2 rounded-xl border p-3 md:grid-cols-[minmax(0,4.4fr)_80px_160px_170px_200px] md:items-stretch ${itemToneClass} ${itemAccentClass}`}
+                      >
+                        <div>
+                          <input
+                            data-estimate-text-field="true"
+                            lang="ko"
+                            inputMode="text"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm"
+                            placeholder="항목 내용을 입력하세요"
+                            value={composingItemNames[item.id] ?? item.name}
+                            onKeyDown={handleEstimateTextFieldKeyDown}
+                            onChange={(event) => {
+                              const nextValue = event.target.value;
+                              const nativeEvent = event.nativeEvent as InputEvent;
+
+                              if (nativeEvent.isComposing) {
+                                setComposingItemNames((current) => ({
+                                  ...current,
+                                  [item.id]: nextValue,
+                                }));
+                                return;
+                              }
+
+                              setComposingItemNames((current) => {
+                                const next = { ...current };
+                                delete next[item.id];
+                                return next;
+                              });
+
+                              updateItem(category.id, item.id, (currentItem) => ({
+                                ...currentItem,
+                                name: nextValue,
+                              }));
+                            }}
+                            onCompositionEnd={(event) => {
+                              const nextValue = event.currentTarget.value;
+
+                              setComposingItemNames((current) => {
+                                const next = { ...current };
+                                delete next[item.id];
+                                return next;
+                              });
+
+                              updateItem(category.id, item.id, (currentItem) => ({
+                                ...currentItem,
+                                name: nextValue,
+                              }));
+                            }}
+                          />
+                          {itemDiff?.kind === "updated" && changedFieldLabels ? (
+                            <p className="mt-2 text-xs text-amber-700">
+                              수정 필드: {changedFieldLabels}
+                            </p>
+                          ) : null}
+                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-center text-sm text-slate-900 shadow-sm"
+                          value={item.qty}
+                          onChange={(event) =>
+                            updateItem(category.id, item.id, (currentItem) => ({
+                              ...currentItem,
+                              qty: Number(event.target.value),
+                            }))
+                          }
+                        />
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right text-sm text-slate-900 shadow-sm"
+                          value={
                             editingPrices[item.id] ??
                             formatPriceInput(String(item.price))
-                          ) === "0"
-                        ) {
-                          event.target.select();
-                        }
-                      }}
-                      onChange={(event) => {
-                          const nextValue = event.target.value;
-                          const formattedValue = formatPriceInput(nextValue);
-
-                          setEditingPrices((current) => ({
-                            ...current,
-                            [item.id]: formattedValue,
-                          }));
-
-                          const parsedValue = parsePriceInput(nextValue);
-
-                          if (parsedValue === null) {
-                            return;
                           }
+                          onFocus={(event) => {
+                            if (
+                              (
+                                editingPrices[item.id] ??
+                                formatPriceInput(String(item.price))
+                              ) === "0"
+                            ) {
+                              event.target.select();
+                            }
+                          }}
+                          onChange={(event) => {
+                            const nextValue = event.target.value;
+                            const formattedValue = formatPriceInput(nextValue);
 
-                          updateItem(category.id, item.id, (currentItem) => ({
-                            ...currentItem,
-                            price: parsedValue,
-                          }));
-                        }}
-                      onBlur={(event) => {
-                        const nextValue = event.target.value;
-                        const parsedValue = parsePriceInput(nextValue);
+                            setEditingPrices((current) => ({
+                              ...current,
+                              [item.id]: formattedValue,
+                            }));
 
-                        setEditingPrices((current) => {
-                          const next = { ...current };
-                          delete next[item.id];
-                          return next;
-                        });
+                            const parsedValue = parsePriceInput(nextValue);
 
-                        updateItem(category.id, item.id, (currentItem) => ({
-                          ...currentItem,
-                          price: parsedValue ?? 0,
-                        }));
-                      }}
-                    />
-                    <div className="flex items-center justify-end rounded-xl border border-slate-200 bg-white px-4 py-3 font-medium text-slate-900">
-                      {calcItem(item.qty, item.price).toLocaleString()}원
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => duplicateItem(category.id, item.id)}
-                        className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-                      >
-                        항목 복사
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleRemoveItem(category.id, item.id, item.name)
-                        }
-                        className="flex-1 rounded-xl border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50"
-                      >
-                        항목 삭제
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                            if (parsedValue === null) {
+                              return;
+                            }
 
-              <div className="mt-4 text-right text-sm font-semibold text-slate-700">
-                품목 합계 {calcCategory(category.items).toLocaleString()}원
-              </div>
-            </section>
-          ))}
+                            updateItem(category.id, item.id, (currentItem) => ({
+                              ...currentItem,
+                              price: parsedValue,
+                            }));
+                          }}
+                          onBlur={(event) => {
+                            const nextValue = event.target.value;
+                            const parsedValue = parsePriceInput(nextValue);
+
+                            setEditingPrices((current) => {
+                              const next = { ...current };
+                              delete next[item.id];
+                              return next;
+                            });
+
+                            updateItem(category.id, item.id, (currentItem) => ({
+                              ...currentItem,
+                              price: parsedValue ?? 0,
+                            }));
+                          }}
+                        />
+                        <div
+                          aria-readonly="true"
+                          className="flex min-h-[52px] flex-col justify-center rounded-xl border border-dashed border-slate-300 bg-slate-100 px-4 py-3 text-right"
+                        >
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                            읽기 전용
+                          </div>
+                          <div className="mt-1 text-sm font-bold tabular-nums text-slate-900">
+                            {calcItem(item.qty, item.price).toLocaleString()}원
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          {itemDiff?.kind === "added" ? (
+                            <span className="w-fit rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
+                              신규 항목
+                            </span>
+                          ) : null}
+                          {itemDiff?.kind === "updated" ? (
+                            <span className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                              수정 항목
+                            </span>
+                          ) : null}
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => duplicateItem(category.id, item.id)}
+                              className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                            >
+                              항목 복사
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleRemoveItem(category.id, item.id, item.name)
+                              }
+                              className="flex-1 rounded-xl border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50"
+                            >
+                              항목 삭제
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 text-right text-sm font-semibold text-slate-700">
+                  품목 합계 {calcCategory(category.items).toLocaleString()}원
+                </div>
+              </section>
+            );
+          })}
         </div>
       </div>
 
@@ -1329,7 +1521,11 @@ export default function EstimateEditor({ siteId }: EstimateEditorProps) {
 
       <div aria-hidden="true" style={HIDDEN_PDF_CAPTURE_STYLE}>
         <div ref={pdfCaptureRef} style={PDF_CAPTURE_COLOR_STYLE}>
-          <EstimateDocument draft={draft} site={site} />
+          <EstimateDocument
+            draft={draft}
+            previousDraft={previousEstimate}
+            site={site}
+          />
         </div>
       </div>
     </SiteWorkspaceShell>

@@ -23,6 +23,16 @@ const cloneEstimateCategory = (
   items: category.items.map(cloneEstimateItem),
 });
 
+const createDuplicateName = (name: string, fallback: string) => {
+  const trimmedName = name.trim();
+
+  if (!trimmedName) {
+    return fallback;
+  }
+
+  return `${trimmedName.replace(/\s+복사본$/, "")} 복사본`;
+};
+
 export function useEstimateState(initialDraft: EstimateDraft) {
   const [draft, setDraft] = useState<EstimateDraft>(initialDraft);
 
@@ -88,9 +98,7 @@ export function useEstimateState(initialDraft: EstimateDraft) {
       const sourceCategory = current.categories[categoryIndex];
       const duplicatedCategory = cloneEstimateCategory({
         ...sourceCategory,
-        name: sourceCategory.name
-          ? `${sourceCategory.name} 복사본`
-          : "복사본 품목",
+        name: createDuplicateName(sourceCategory.name, "복사본 품목"),
       });
       const categories = [...current.categories];
 
@@ -138,7 +146,7 @@ export function useEstimateState(initialDraft: EstimateDraft) {
       const sourceItem = category.items[itemIndex];
       const duplicatedItem = cloneEstimateItem({
         ...sourceItem,
-        name: sourceItem.name ? `${sourceItem.name} 복사본` : "복사본 항목",
+        name: createDuplicateName(sourceItem.name, "복사본 항목"),
       });
       const items = [...category.items];
 

@@ -81,8 +81,7 @@ const sections: {
   {
     key: "settlement",
     label: "입금 / 정산",
-    href: (siteId) => `/sites/${siteId}`,
-    upcoming: true,
+    href: (siteId) => `/sites/${siteId}/settlement`,
   },
   {
     key: "options",

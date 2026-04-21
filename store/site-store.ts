@@ -22,17 +22,33 @@ export const useSiteStore = create<SiteState>()((set) => ({
   sites: [],
 
   hydrateSites: () => {
-    set({
-      sites: siteRepository.getAll(),
-      hydrated: true,
-    });
+    try {
+      set({
+        sites: siteRepository.getAll(),
+        hydrated: true,
+      });
+    } catch (error) {
+      console.error("Failed to hydrate sites", error);
+      set({
+        sites: [],
+        hydrated: true,
+      });
+    }
   },
 
   refreshSites: () => {
-    set({
-      sites: siteRepository.getAll(),
-      hydrated: true,
-    });
+    try {
+      set({
+        sites: siteRepository.getAll(),
+        hydrated: true,
+      });
+    } catch (error) {
+      console.error("Failed to refresh sites", error);
+      set({
+        sites: [],
+        hydrated: true,
+      });
+    }
   },
 
   addSite: (overrides = {}) => {

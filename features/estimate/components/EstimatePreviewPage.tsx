@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import EstimateDocument from "@/components/EstimateDocument";
 import WorkspaceTopBar from "@/components/WorkspaceTopBar";
 import { estimateRepository } from "@/repositories/estimateRepository";
@@ -16,6 +16,16 @@ type Html2CanvasFunction = typeof import("html2canvas").default;
 type JsPdfConstructor = typeof import("jspdf").jsPDF;
 
 const PDF_CAPTURE_COLOR_STYLE = {
+  "--color-amber-50": "#fffbeb",
+  "--color-amber-100": "#fef3c7",
+  "--color-amber-200": "#fde68a",
+  "--color-amber-700": "#b45309",
+  "--color-green-50": "#f0fdf4",
+  "--color-green-100": "#dcfce7",
+  "--color-green-200": "#bbf7d0",
+  "--color-green-700": "#15803d",
+  "--color-red-100": "#fee2e2",
+  "--color-red-700": "#b91c1c",
   "--color-slate-50": "#f8fafc",
   "--color-slate-100": "#f1f5f9",
   "--color-slate-200": "#e2e8f0",
@@ -46,6 +56,30 @@ export default function EstimatePreviewPage({
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const estimates = useMemo(
+    () => estimateRepository.getEstimatesBySite(siteId),
+    [siteId]
+  );
+  const currentEstimateId = useMemo(() => {
+    const estimate = estimateRepository.getById(estimateId);
+
+    return estimate?.id ?? estimates[0]?.id ?? null;
+  }, [estimateId, estimates]);
+  const previousEstimate = useMemo(() => {
+    if (!currentEstimateId) {
+      return null;
+    }
+
+    const currentIndex = estimates.findIndex(
+      (estimate) => estimate.id === currentEstimateId
+    );
+
+    if (currentIndex === -1) {
+      return null;
+    }
+
+    return estimates[currentIndex + 1] ?? null;
+  }, [currentEstimateId, estimates]);
 
   useEffect(() => {
     const estimate = estimateRepository.getById(estimateId);
@@ -202,7 +236,7 @@ export default function EstimatePreviewPage({
             </h1>
             <p className="mt-1 text-sm text-slate-500">
               고객 전달용 문서 레이아웃입니다. 아래 문서를 그대로 캡처해 PDF로
-              저장합니다.
+              다운로드할 수 있습니다.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -224,7 +258,11 @@ export default function EstimatePreviewPage({
         </div>
 
         <div ref={previewRef} style={PDF_CAPTURE_COLOR_STYLE}>
-          <EstimateDocument draft={draft} site={site} />
+          <EstimateDocument
+            draft={draft}
+            previousDraft={previousEstimate}
+            site={site}
+          />
         </div>
       </div>
     </div>
